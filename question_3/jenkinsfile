@@ -1,0 +1,67 @@
+pipeline {
+    agent { docker { image 'hello-world' } }
+    stages {
+        stage('build') {
+            steps {
+                sh 'echo "Building Hello World"'
+            }
+        }
+        stage('Deploy') {
+            steps {
+                script {
+
+                    // Comment in and out some things so this deploys branch 11-x for this demo.
+                    // In real world projects its good practice to deploy only develop and master branches
+                    if (env.BRANCH_NAME == "master") {
+                        //deployToKubernetes(versionName, 'kubeconfig-prod', getServiceIp('kubeconfig-prod'))
+                    } else { //if (env.BRANCH_NAME == 'develop') {
+                        deployToKubernetes(versionName, 'kubeconfig-oss-deployer', getServiceIp('kubeconfig-oss-deployer'))
+                    }
+                }
+            }
+        }
+    }
+}
+
+String createVersion() {
+    // E.g. "201708140933"
+    String versionName = "${new Date().format('yyyyMMddHHmm')}"
+
+    if (env.BRANCH_NAME != "master") {
+        versionName += '-SNAPSHOT'
+    }
+    echo "Building version ${versionName} on branch ${env.BRANCH_NAME}"
+    currentBuild.description = versionName
+    env.versionName = versionName
+}
+
+
+void deployToKubernetes(String versionName, String credentialsId, String hostname) {
+
+    String imageName = "ronydebnath/testProject:${versionName}"
+
+    docker.withRegistry('', 'hub.docker.com-ronydebnath') {
+        docker.build(imageName, '.').push()
+    }
+
+    withCredentials([file(credentialsId: credentialsId, variable: 'kubeconfig')]) {
+
+        withEnv(["IMAGE_NAME=${imageName}"]) {
+
+            kubernetesDeploy(
+                    credentialsType: 'KubeConfig',
+                    kubeConfig: [path: kubeconfig],
+                    configs: 'k8s/deployment.yaml',
+                    enableConfigSubstitution: true
+            )
+        }
+    }
+
+    timeout(time: 3, unit: 'MINUTES') {
+        waitUntil {
+            sleep(time: 10, unit: 'SECONDS')
+            isVersionDeployed(versionName, "http://${hostname}/rest/version")
+        }
+    }
+}
+
